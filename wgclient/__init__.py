@@ -45,7 +45,10 @@ class WarpgateClient:
             raise WarpgateError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
         if r.status_code == 204 or not r.content:
             return None
-        return r.json()
+        try:
+            return r.json()
+        except ValueError:
+            return None
 
     # ── ensure: 있으면 반환, 없으면 생성 ────────────────────
 
