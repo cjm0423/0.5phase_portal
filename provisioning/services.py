@@ -6,6 +6,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from osclient import get_conn, vm as osvm
+from wgclient import get_wg                       # [ADDED]
 from .models import Slot, Vm
 
 log = logging.getLogger(__name__)
@@ -83,28 +84,51 @@ def claim(worker_id):
 
 
 def provision(vm_id):
-    """VM 생성"""
+    """VM 생성 + Warpgate 등록"""
     vm_rec = Vm.objects.get(pk=vm_id)
     conn = get_conn()
 
-    if _reconcile(conn, vm_rec):
-        return None
+    adopted = _reconcile(conn, vm_rec)            # [CHANGED] 입양돼도 WG 등록은 계속 진행
 
+    if not adopted:
+        try:
+            server = osvm.create(conn, vm_rec.slot_id, KEYFILE)
+        except Exception as e:
+            _mark_failed(conn, vm_rec, f"{type(e).__name__}: {e}")
+            raise
+        _mark_active(vm_rec, server.id)
+
+    # [ADDED] Warpgate 등록 — ensure_* 라 재실행에 안전.
+    # 실패 시 FAILED 처리하지 않음: VM 은 살아있으므로 재시도로 수렴 가능.
+    n = vm_rec.slot_id
     try:
-        server = osvm.create(conn, vm_rec.slot_id, KEYFILE)
-    except Exception as e:
-        _mark_failed(conn, vm_rec, f"{type(e).__name__}: {e}")
+        wg = get_wg()
+        password = wg.provision_seat(
+            n=n,
+            fip=osvm.fip_for(n),
+            ssh_user=osvm.user_for(n),
+        )
+        # TODO(Phase 0.5): 비밀번호 전달 경로는 포털 UI 확정 후 결정.
+        # 임시로 워커 로그에만 남김. DB 평문 저장 금지.
+        log.info("wg provisioned: student%s / %s", n, password)
+    except Exception:
+        log.exception("warpgate provision failed for vm%s (VM alive, retry manually)", n)
         raise
 
-    _mark_active(vm_rec, server.id)
-    return server
+    return vm_rec
 
 
 def deprovision(vm_id):
-    """VM 삭제 · 슬롯 반납"""
+    """Warpgate 해제 + VM 삭제 · 슬롯 반납"""
     vm_rec = Vm.objects.get(pk=vm_id)
     if vm_rec.status == Vm.DELETED:
         return
+
+    # [ADDED] VM 삭제 전에 Warpgate 접근부터 끊는다 (죽은 target 로 로그인 시도 방지)
+    try:
+        get_wg().deprovision_seat(vm_rec.slot_id)
+    except Exception:
+        log.exception("warpgate deprovision failed for vm%s (continuing)", vm_rec.slot_id)
 
     conn = get_conn()
 
