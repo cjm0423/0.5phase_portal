@@ -12,6 +12,9 @@ import os
 import secrets
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv("/opt/su-portal/.env")
 
 
 class WarpgateError(RuntimeError):
@@ -27,8 +30,8 @@ class WarpgateClient:
         self.verify = verify
         self.timeout = timeout
         self.s = requests.Session()
-        # NOTE: wg_verify.py 에서 검증한 인증 방식과 일치시킬 것
-        self.s.headers["Authorization"] = f"Bearer {self.token}"
+        # wg_verify.py 로 검증된 인증 방식
+        self.s.headers["X-Warpgate-Token"] = self.token
 
     # ── 저수준 ─────────────────────────────────────────────
 
