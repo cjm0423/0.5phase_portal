@@ -99,7 +99,8 @@ def provision(vm_id):
         _mark_active(vm_rec, server.id)
 
     # [ADDED] Warpgate 등록 — ensure_* 라 재실행에 안전.
-    # 실패 시 FAILED 처리하지 않음: VM 은 살아있으므로 재시도로 수렴 가능.
+    # 실패 시 PROVISIONING 으로 되돌려 워커 재시도 루프에 복귀시킴.
+    # (ACTIVE 로 남기면 claim 조건에서 빠져 영원히 재시도 안 됨 — 8/20 vm2 사례)
     n = vm_rec.slot_id
     try:
         wg = get_wg()
@@ -112,7 +113,14 @@ def provision(vm_id):
         # 임시로 워커 로그에만 남김. DB 평문 저장 금지.
         log.info("wg provisioned: student%s / %s", n, password)
     except Exception:
-        log.exception("warpgate provision failed for vm%s (VM alive, retry manually)", n)
+        log.exception(
+            "warpgate provision failed for vm%s, reverting to PROVISIONING for retry", n
+        )
+        with transaction.atomic():
+            vm_rec.status = Vm.PROVISIONING
+            vm_rec.claimed_at = None
+            vm_rec.claimed_by = ""
+            vm_rec.save(update_fields=["status", "claimed_at", "claimed_by", "updated_at"])
         raise
 
     return vm_rec

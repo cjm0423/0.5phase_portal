@@ -32,6 +32,7 @@ class WarpgateClient:
         self.s = requests.Session()
         # wg_verify.py 로 검증된 인증 방식
         self.s.headers["X-Warpgate-Token"] = self.token
+        self.s.headers["Content-Type"] = "application/json"
 
     # ── 저수준 ─────────────────────────────────────────────
 
@@ -84,7 +85,7 @@ class WarpgateClient:
     def bind(self, user_id, target_id, role_id, expiry=None):
         """user↔role, target↔role 연결. role 이 1:1 격리의 join.
         expiry(ISO8601): 학기말 자동 만료용. user-role 에만 적용."""
-        body = {"expiry": expiry} if expiry else None
+        body = {"expiry": expiry} if expiry else {}
         self._call("POST", f"/users/{user_id}/roles/{role_id}", json=body,
                    ok_status=(200, 201, 204, 409))   # 409 = 이미 연결됨 → 멱등
         self._call("POST", f"/targets/{target_id}/roles/{role_id}",
