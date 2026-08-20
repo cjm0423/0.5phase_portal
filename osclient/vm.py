@@ -11,6 +11,7 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - {pubkey}
+      - {wg_pubkey}
 """
 
 
@@ -27,7 +28,10 @@ def fip_for(n):
 
 
 def build_user_data(n, pubkey):
-    ud = USER_DATA.format(n=n, pubkey=pubkey)
+    """관리용 키(pubkey) + Warpgate 자체 키(WG_PUBKEY) 를 함께 주입.
+    WG_PUBKEY 가 없으면 Warpgate 가 VM 에 접속할 수 없으므로 즉시 실패시킴.
+    값은 wgclient.own_keys() 의 ed25519 public_key 를 .env 에 넣는다."""
+    ud = USER_DATA.format(n=n, pubkey=pubkey, wg_pubkey=os.environ["WG_PUBKEY"])
     return base64.b64encode(ud.encode()).decode()
 
 
