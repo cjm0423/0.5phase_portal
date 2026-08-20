@@ -127,6 +127,11 @@ class WarpgateClient:
         self.delete_user(f"student{n}")
         self.delete_role(f"slot-{n}")
 
+    def own_keys(self):
+        """Warpgate 자체 SSH 공개키 목록.
+        운영계 전환 시 이 키를 OpenStack keypair 로 등록해야 VM 접속 가능."""
+        return self._call("GET", "/ssh/own-keys")
+
     def status(self):
         """현재 발급 현황 요약."""
         users = [u["username"] for u in self._call("GET", "/users")]
