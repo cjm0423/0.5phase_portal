@@ -108,7 +108,9 @@ def provision(vm_id):
             n=n,
             fip=osvm.fip_for(n),
             ssh_user=osvm.user_for(n),
+            password=f"Student{n}!",
         )
+        log.info("wg provisioned: student%s", n)
         # TODO(Phase 0.5): 비밀번호 전달 경로는 포털 UI 확정 후 결정.
         # 임시로 워커 로그에만 남김. DB 평문 저장 금지.
         log.info("wg provisioned: student%s / %s", n, password)

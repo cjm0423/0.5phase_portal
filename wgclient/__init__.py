@@ -116,14 +116,14 @@ class WarpgateClient:
 
     # ── 고수준: 포털 워커가 부르는 단위 ─────────────────────
 
-    def provision_seat(self, n, fip, ssh_user, expiry=None):
+    def provision_seat(self, n, fip, ssh_user, expiry=None, password=None):
         """슬롯 n 발급: user student{n} + role slot-{n} + target vm{n} 을 만들고 연결.
-        반환: 생성/재사용된 비밀번호 (재실행 시 새로 세팅됨)."""
+        password 미지정 시 랜덤 생성 (반환값으로 전달)."""
         user = self.ensure_user(f"student{n}")
         role = self.ensure_role(f"slot-{n}")
         target = self.ensure_ssh_target(f"vm{n}", host=fip, username=ssh_user)
         self.bind(user["id"], target["id"], role["id"], expiry=expiry)
-        return self.set_password(user["id"])
+        return self.set_password(user["id"], password)
 
     def deprovision_seat(self, n):
         """슬롯 n 회수: target → user → role 순서로 제거."""
