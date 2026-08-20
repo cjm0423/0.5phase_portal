@@ -1,0 +1,187 @@
+import logging
+from datetime import timedelta
+
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
+
+from osclient import get_conn, vm as osvm
+from .models import Slot, Vm
+
+log = logging.getLogger(__name__)
+
+KEYFILE = "/opt/su-portal/sdk-probe-key.pem"
+CLAIM_TIMEOUT = timedelta(minutes=10)
+
+
+# ── 요청 접수 ──────────────────────────────────────────────
+
+def reserve(student_id):
+    """빈 슬롯 예약"""
+    with transaction.atomic():
+        slot = (
+            Slot.objects
+            .select_for_update(skip_locked=True)
+            .filter(status=Slot.FREE)
+            .order_by("n")
+            .first()
+        )
+        if slot is None:
+            return None
+
+        slot.status = Slot.TAKEN
+        slot.save(update_fields=["status"])
+
+        return Vm.objects.create(slot=slot, student_id=student_id)
+
+
+def request_delete(vm_id):
+    """회수 예약"""
+    with transaction.atomic():
+        rec = Vm.objects.select_for_update().get(pk=vm_id)
+        if rec.status != Vm.ACTIVE:
+            return None
+
+        rec.status = Vm.DELETING
+        rec.claimed_at = None
+        rec.claimed_by = ""
+        rec.save(update_fields=["status", "claimed_at", "claimed_by", "updated_at"])
+        return rec
+
+
+def request_delete_all():
+    """전체 회수 예약"""
+    ids = list(
+        Vm.objects.filter(status=Vm.ACTIVE)
+        .order_by("slot_id")
+        .values_list("id", flat=True)
+    )
+    return [rec for i in ids if (rec := request_delete(i)) is not None]
+
+
+# ── 작업 실행 ──────────────────────────────────────────────
+
+def claim(worker_id):
+    """작업 집기 · 유실분 포함"""
+    stale = timezone.now() - CLAIM_TIMEOUT
+    with transaction.atomic():
+        rec = (
+            Vm.objects
+            .select_for_update(skip_locked=True)
+            .filter(status__in=[Vm.PROVISIONING, Vm.DELETING])
+            .filter(Q(claimed_at__isnull=True) | Q(claimed_at__lt=stale))
+            .order_by("created_at")
+            .first()
+        )
+        if rec is None:
+            return None
+
+        rec.claimed_at = timezone.now()
+        rec.claimed_by = worker_id
+        rec.save(update_fields=["claimed_at", "claimed_by", "updated_at"])
+        return rec
+
+
+def provision(vm_id):
+    """VM 생성"""
+    vm_rec = Vm.objects.get(pk=vm_id)
+    conn = get_conn()
+
+    if _reconcile(conn, vm_rec):
+        return None
+
+    try:
+        server = osvm.create(conn, vm_rec.slot_id, KEYFILE)
+    except Exception as e:
+        _mark_failed(conn, vm_rec, f"{type(e).__name__}: {e}")
+        raise
+
+    _mark_active(vm_rec, server.id)
+    return server
+
+
+def deprovision(vm_id):
+    """VM 삭제 · 슬롯 반납"""
+    vm_rec = Vm.objects.get(pk=vm_id)
+    if vm_rec.status == Vm.DELETED:
+        return
+
+    conn = get_conn()
+
+    if vm_rec.server_id:
+        server = conn.compute.find_server(str(vm_rec.server_id))
+        if server is not None and server.status != "DELETED":
+            osvm.delete(conn, server.id)
+
+    _release(vm_rec)
+
+
+# ── 내부 ────────────────────────────────────────────────────
+
+def _reconcile(conn, vm_rec):
+    """실제 상태 대조 · 기존 VM 입양"""
+    name = osvm.name_for(vm_rec.slot_id)
+    server = next(
+        (s for s in conn.compute.servers(name=name) if s.status != "DELETED"),
+        None,
+    )
+    if server is None:
+        return False
+
+    if server.status == "ACTIVE":
+        log.info("reconcile: %s already ACTIVE, adopting", name)
+        _mark_active(vm_rec, server.id)
+        return True
+
+    log.info("reconcile: %s in %s, deleting for retry", name, server.status)
+    osvm.delete(conn, server.id)
+    return False
+
+
+def _mark_active(vm_rec, server_id):
+    """생성 완료 기록"""
+    with transaction.atomic():
+        vm_rec.status = Vm.ACTIVE
+        vm_rec.server_id = server_id
+        vm_rec.save(update_fields=["status", "server_id", "updated_at"])
+
+
+def _mark_failed(conn, vm_rec, err):
+    """실패 기록 · 잔여물 정리"""
+    with transaction.atomic():
+        vm_rec.status = Vm.FAILED
+        vm_rec.error = err[:2000]
+        vm_rec.save(update_fields=["status", "error", "updated_at"])
+
+    name = osvm.name_for(vm_rec.slot_id)
+    try:
+        server = next(
+            (s for s in conn.compute.servers(name=name) if s.status != "DELETED"),
+            None,
+        )
+        if server is not None:
+            osvm.delete(conn, server.id)
+    except Exception:
+        log.exception("cleanup failed for %s - slot stays TAKEN", name)
+        return
+
+    _free_slot(vm_rec.slot_id)
+
+
+def _release(vm_rec):
+    """회수 기록 · 이력 보존"""
+    with transaction.atomic():
+        vm_rec.status = Vm.DELETED
+        vm_rec.save(update_fields=["status", "updated_at"])
+
+        slot = Slot.objects.select_for_update().get(pk=vm_rec.slot_id)
+        slot.status = Slot.FREE
+        slot.save(update_fields=["status"])
+
+
+def _free_slot(n):
+    """슬롯 해제"""
+    with transaction.atomic():
+        slot = Slot.objects.select_for_update().get(pk=n)
+        slot.status = Slot.FREE
+        slot.save(update_fields=["status"])
