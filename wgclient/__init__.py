@@ -111,7 +111,7 @@ class WarpgateClient:
     def delete_role(self, name):
         for r in self._call("GET", "/roles"):
             if r["name"] == name:
-                self._call("DELETE", f"/roles/{r['id']}", ok_status=(200, 204, 404))
+                self._call("DELETE", f"/role/{r['id']}", ok_status=(200, 204, 404))
                 return
 
     # ── 고수준: 포털 워커가 부르는 단위 ─────────────────────
