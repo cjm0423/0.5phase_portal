@@ -2,6 +2,7 @@ from django.shortcuts import render, redirect
 from django.http import HttpResponse
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.utils.dateparse import parse_datetime
 
 from provisioning.models import Slot, Vm
 from provisioning import services
@@ -58,12 +59,19 @@ def list_view(request):
         action = request.POST.get("action")
         if action == "delete_all":
             services.request_delete_all()
+            from django.utils import timezone
+            request.session["hide_failed_before"] = timezone.now().isoformat()
         elif action == "delete_selected":
             for vid in request.POST.getlist("vm_ids"):
                 services.request_delete(int(vid))
         return redirect("portal:list")
 
     all_vms = Vm.objects.exclude(status=Vm.DELETED).order_by("slot_id")
+
+    hide_before = request.session.get("hide_failed_before")
+    if hide_before:
+        cutoff = parse_datetime(hide_before)
+        all_vms = all_vms.exclude(status=Vm.FAILED, created_at__lt=cutoff)
 
     status_counts = {s: 0 for s in STATUS_LIST}
     for v in all_vms:
